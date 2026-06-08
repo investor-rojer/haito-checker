@@ -104,10 +104,11 @@ def fetch_kabutan(code: str) -> dict:
         return {"per": None, "pbr": None, "sector": None}
     html = r.text
 
-    per = pbr = None
+    per = pbr = yield_pct = None
     i = html.find("信用倍率")
     if i >= 0:
         chunk = re.sub(r"<[^>]+>", " ", html[i:i + 400])
+        # 指標行の並び: [PER, PBR, 利回り(％), 信用倍率]
         pairs = re.findall(r"(－|-|[\d,]+(?:\.\d+)?)\s*(倍|％|%)", chunk)
 
         def val(idx):
@@ -121,14 +122,20 @@ def fetch_kabutan(code: str) -> dict:
             except ValueError:
                 return None
 
-        per, pbr = val(0), val(1)
+        per, pbr, yield_pct = val(0), val(1), val(2)
 
     sector = None
     m = re.search(r'<a[^>]*href="[^"]*industry[^"]*"[^>]*>([^<]+)</a>', html)
     if m:
         sector = m.group(1).strip()
 
-    return {"per": per, "pbr": pbr, "sector": sector}
+    # 銘柄名(IRバンクが使えない環境のフォールバック用)。title例:「全国保証【7164】株の…」
+    name = None
+    mt = re.search(r"<title>([^<【(（]+)", html)
+    if mt:
+        name = mt.group(1).strip()
+
+    return {"per": per, "pbr": pbr, "sector": sector, "yield_pct": yield_pct, "name": name}
 
 
 def fetch_per_pbr_yahoo(code: str) -> dict:
@@ -207,6 +214,9 @@ def get_price_info(code: str) -> dict:
     if not sector:
         time.sleep(0.3)
         sector = fetch_sector_yahoo(code)
+    # 銘柄名がIRバンクで取れない(海外サーバー等)場合は株探の名前で補完。
+    if not name:
+        name = kb.get("name")
 
     change = None
     change_pct = None
@@ -225,5 +235,6 @@ def get_price_info(code: str) -> dict:
         "change_pct": change_pct,
         "per": per,
         "pbr": pbr,
+        "yield_pct": kb.get("yield_pct"),  # 株探の予想配当利回り(海外フォールバック用)
         "as_of": price.get("as_of") or datetime.now().strftime("%Y-%m-%d"),
     }

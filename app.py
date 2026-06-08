@@ -69,18 +69,36 @@ def load_dividends(code: str) -> dict:
     """
     data = fetch_irbank_dividend(code)
     by_year = {p["year"]: p["annual"] for p in data.get("periods", []) if p.get("annual")}
+    source = "irbank" if by_year else None
 
-    # 直近年(2025〜2027)はウォッチリストと同じソースで上書き(整合性)
-    fy = get_dividends_for_years(code)
-    for p in fy.get("periods_out", []):
-        if p.get("annual") is not None:
-            m = re.match(r"(\d{4})年", p["label"])
-            if m:
-                by_year[int(m.group(1))] = p["annual"]
+    if by_year:
+        # 直近年(2025〜2027)はウォッチリストと同じソースで上書き(整合性)
+        fy = get_dividends_for_years(code)
+        for p in fy.get("periods_out", []):
+            if p.get("annual") is not None:
+                m = re.match(r"(\d{4})年", p["label"])
+                if m:
+                    by_year[int(m.group(1))] = p["annual"]
+    else:
+        # フォールバック: IRバンクが使えない(海外サーバー等)場合は yfinance の配当履歴
+        try:
+            d = yf.Ticker(f"{code}.T").dividends
+            if d is not None and len(d):
+                d.index = pd.to_datetime(d.index).tz_localize(None)
+                grp = d.groupby(d.index.year).sum()
+                yb = {int(y): round(float(v), 2) for y, v in grp.items()}
+                # 今年は途中で不完全なことがある→前年の6割未満なら除外
+                ys = sorted(yb)
+                if len(ys) >= 2 and yb[ys[-1]] < yb[ys[-2]] * 0.6:
+                    yb.pop(ys[-1])
+                by_year = yb
+                source = "yfinance" if by_year else None
+        except Exception:
+            pass
 
     latest_year = max(by_year) if by_year else None
     latest_div = by_year.get(latest_year) if latest_year else None
-    return {"by_year": by_year, "latest_year": latest_year, "latest_div": latest_div}
+    return {"by_year": by_year, "latest_year": latest_year, "latest_div": latest_div, "source": source}
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -255,7 +273,14 @@ sector = info.get("sector") or ""
 close = info.get("close")
 by_year = div["by_year"]
 latest_div = div["latest_div"]
-current_yield = (latest_div / close * 100) if (latest_div and close) else None
+# IRバンク由来ならその配当で利回り算出(ウォッチリストと一致)。
+# 海外フォールバック(yfinance配当は今期が不完全)の場合は株探の予想利回りを使う。
+if div.get("source") == "irbank" and latest_div and close:
+    current_yield = latest_div / close * 100
+else:
+    current_yield = info.get("yield_pct")
+    if current_yield is None and latest_div and close:
+        current_yield = latest_div / close * 100
 
 yld = yield_series(hist, by_year)
 manual_max = load_manual_max().get(code)  # ウォッチリスト手入力(スカウター)の最大値があれば優先
