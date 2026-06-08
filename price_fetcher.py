@@ -138,6 +138,47 @@ def fetch_kabutan(code: str) -> dict:
     return {"per": per, "pbr": pbr, "sector": sector, "yield_pct": yield_pct, "name": name}
 
 
+def fetch_kabutan_dividends(code: str) -> dict:
+    """株探(kabutan.jp)の業績ページから 年間配当(決算期ベース) を {年: 配当} で返す。
+
+    IRバンクが使えない環境(海外サーバー等)のフォールバック用。
+    暦年合算でない決算期ベースなので、特別配当の混入や今期途中の誤判定が起きにくい。
+    予想(予)行も含む。取得失敗時は空dict。
+    """
+    try:
+        html = requests.get(f"https://kabutan.jp/stock/finance?code={code}",
+                            headers=HEADERS, timeout=15).text
+    except Exception:
+        return {}
+    by_year = {}
+    for tbl in re.findall(r"<table[^>]*>(.*?)</table>", html, re.DOTALL):
+        if "決算期" not in tbl or "1株配" not in tbl:
+            continue
+        div_idx = None
+        for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", tbl, re.DOTALL):
+            cells = [re.sub(r"<[^>]+>", "", c).strip()
+                     for c in re.findall(r"<t[hd][^>]*>(.*?)</t[hd]>", tr, re.DOTALL)]
+            cells = [c for c in cells if c != ""]
+            if not cells:
+                continue
+            if div_idx is None:  # ヘッダ行で「1株配」列の位置を特定
+                if any("1株配" in c for c in cells):
+                    for j, c in enumerate(cells):
+                        if "1株配" in c:
+                            div_idx = j
+                continue
+            ym = re.match(r".*?(\d{4})\.(\d{1,2})", cells[0])  # 決算期 例: 2026.03 / 予 2027.03
+            if not ym or div_idx >= len(cells):
+                continue
+            try:
+                by_year[int(ym.group(1))] = float(cells[div_idx].replace(",", ""))
+            except ValueError:
+                pass
+        if by_year:
+            break
+    return by_year
+
+
 def fetch_per_pbr_yahoo(code: str) -> dict:
     """finance.yahoo.co.jp の参考指標から 予想PER・実績PBR を取得する。
 

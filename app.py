@@ -22,7 +22,7 @@ import yfinance as yf
 import gspread
 from google.oauth2.service_account import Credentials
 
-from price_fetcher import get_price_info
+from price_fetcher import get_price_info, fetch_kabutan_dividends
 from dividend_fetcher import fetch_irbank_dividend, get_dividends_for_years
 
 st.set_page_config(page_title="高配当株 買い時チェッカー", page_icon="📈", layout="wide")
@@ -80,21 +80,11 @@ def load_dividends(code: str) -> dict:
                 if m:
                     by_year[int(m.group(1))] = p["annual"]
     else:
-        # フォールバック: IRバンクが使えない(海外サーバー等)場合は yfinance の配当履歴
-        try:
-            d = yf.Ticker(f"{code}.T").dividends
-            if d is not None and len(d):
-                d.index = pd.to_datetime(d.index).tz_localize(None)
-                grp = d.groupby(d.index.year).sum()
-                yb = {int(y): round(float(v), 2) for y, v in grp.items()}
-                # 今年は途中で不完全なことがある→前年の6割未満なら除外
-                ys = sorted(yb)
-                if len(ys) >= 2 and yb[ys[-1]] < yb[ys[-2]] * 0.6:
-                    yb.pop(ys[-1])
-                by_year = yb
-                source = "yfinance" if by_year else None
-        except Exception:
-            pass
+        # フォールバック: IRバンクが使えない(海外サーバー等)→株探の業績ページから年間配当
+        kb_div = fetch_kabutan_dividends(code)
+        if kb_div:
+            by_year = kb_div
+            source = "kabutan"
 
     latest_year = max(by_year) if by_year else None
     latest_div = by_year.get(latest_year) if latest_year else None
