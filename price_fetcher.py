@@ -179,6 +179,63 @@ def fetch_kabutan_dividends(code: str) -> dict:
     return by_year
 
 
+def fetch_kabutan_financials(code: str) -> list:
+    """株探の業績ページから 決算期ごとの EPS・配当・最終益 を返す。
+
+    返り値: [{year, eps, dividend, net_profit, is_forecast}, ...] 古い順。予想行(予)含む。
+    配当性向・減配リスク判定・成長判定に使う。取得失敗時は空list。
+    """
+    try:
+        html = requests.get(f"https://kabutan.jp/stock/finance?code={code}",
+                            headers=HEADERS, timeout=15).text
+    except Exception:
+        return []
+    for tbl in re.findall(r"<table[^>]*>(.*?)</table>", html, re.DOTALL):
+        if not ("決算期" in tbl and "1株配" in tbl and "1株益" in tbl):
+            continue
+        idx = {}
+        out = []
+        for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", tbl, re.DOTALL):
+            cells = [re.sub(r"<[^>]+>", "", c).strip()
+                     for c in re.findall(r"<t[hd][^>]*>(.*?)</t[hd]>", tr, re.DOTALL)]
+            cells = [c for c in cells if c != ""]
+            if not cells:
+                continue
+            if not idx:  # ヘッダ行で列位置を特定
+                if any("1株配" in c for c in cells) and any("1株益" in c for c in cells):
+                    for j, c in enumerate(cells):
+                        if "最終益" in c:
+                            idx["net"] = j
+                        elif "1株益" in c:
+                            idx["eps"] = j
+                        elif "1株配" in c:
+                            idx["div"] = j
+                continue
+            ym = re.match(r".*?(\d{4})\.(\d{1,2})", cells[0])
+            if not ym:
+                continue
+
+            def num(j):
+                if j is None or j >= len(cells):
+                    return None
+                v = cells[j].replace(",", "").replace("－", "").strip()
+                try:
+                    return float(v)
+                except ValueError:
+                    return None
+
+            out.append({
+                "year": int(ym.group(1)),
+                "eps": num(idx.get("eps")),
+                "dividend": num(idx.get("div")),
+                "net_profit": num(idx.get("net")),
+                "is_forecast": "予" in cells[0],
+            })
+        if out:
+            return out
+    return []
+
+
 def fetch_per_pbr_yahoo(code: str) -> dict:
     """finance.yahoo.co.jp の参考指標から 予想PER・実績PBR を取得する。
 
